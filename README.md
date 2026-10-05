@@ -4,7 +4,7 @@ Field notes from migrating a **live, payment-gated API** from x402 V1 to V2 on B
 
 Written from [x402ai](https://github.com/ukenal/x402ai), which settles real USDC on Base via the Coinbase CDP facilitator. Every code sample here is running in production, not reconstructed from the spec.
 
-**Last verified:** July 2026 · `@x402/*` 2.19.0 · `@coinbase/x402` 2.1.0
+**Last verified:** written July 2026 against `@x402/*` 2.19.0 and `@coinbase/x402` 2.1.0. The wiring shown here still runs unchanged on `@x402/*` 2.28.0 (October 2026). Ecosystem notes such as x402scan behavior and facilitator pricing are as of July. Already on V2 and upgrading? → [upgrade notes](https://github.com/ukenal/x402ai/blob/main/docs/upgrading-within-v2.md)
 
 **In a hurry?** → [Migration checklist](#migration-checklist)
 
@@ -52,8 +52,9 @@ At time of writing the `@x402/*` packages were at 2.19.0 and `@coinbase/x402` at
 ### Install gotcha
 
 ```bash
-npm install @x402/hono@2 @x402/core@2 @x402/evm@2 @coinbase/x402@2 --legacy-peer-deps
+npm install @x402/hono@2 @x402/core@2 @x402/evm@2 @x402/extensions@2 @coinbase/x402@2 --legacy-peer-deps
 ```
+Install the `@x402/*` packages together and keep them on the same version. Recent releases pin each other with `~` ranges (for example `@x402/hono` 2.28.0 depends on `@x402/core` `~2.28.0`), so upgrading one on its own can leave a mismatched copy in your tree. `@x402/extensions` is only needed if you declare Bazaar discovery.
 
 You will likely need `--legacy-peer-deps`. The optional paywall peer dependency wants React 19; if your project is on React 18 (or has any other React in the tree), npm refuses the install outright. The paywall is optional and unrelated to server-side payment gating, so the flag is safe here — but know *why* you're using it rather than reflexively adding it.
 
@@ -146,7 +147,7 @@ app.use('*', async (c, next) => {
 
 The V2 fix is the explicit `resource` field per route, shown above. Runtime resolution is effectively `routeConfig.resource || adapter.getUrl()` — anything you set explicitly wins, anything you don't falls back to the derived (wrong) URL. Set it on every paid route; there is no global override.
 
-Once that's in place, delete the forwarded-header middleware. I still had mine months after the migration, which is how this section came to be written.
+Once that's in place, the forwarded-header middleware has no effect on URL construction and can be deleted. I left mine in for months after the migration, which is how this section came to be written, and it's still in my file today: harmless, but not yet removed.
 
 ---
 
@@ -173,8 +174,7 @@ You're looking for `x402Version: 2`, your CAIP-2 network (`eip155:8453` for Base
 ## Two things worth adding while you're in there
 
 Neither is required by V2, but both are easier to do during a migration than to retrofit.
-
-**Validate input *before* the payment gate.** Register your validation middleware ahead of the payment middleware so a malformed request gets a `400` instead of a `402`. Otherwise you're asking an agent to pay before you tell it the request was never going to work — which is bad behavior, and worse when the payer is an automated client with no human to notice.
+**Validate input only once a payment is attached.** I originally recommended validating before the payment gate so a malformed request gets a `400` instead of a `402`. I reversed that on 2026-09-29. Coinbase's Bazaar validator POSTs to a paid route without a usable body and requires a `402` back; with validation first it got a `400` and failed its check. So now: an unpaid request **always** gets `402`, whatever the body contains, and input validation (`400`) runs only when a `payment-signature` header is present. The original concern still holds up, because the payer isn't charged for a bad request: the middleware skips settlement when the handler returns a status of 400 or above, and a request with a payload that fails validation never reaches settlement at all. In code, each validator starts with `if (!c.req.header('payment-signature')) return next()`, and the handlers parse the body tolerantly so an empty body gives a `400`, not a `500`. Only the V2 `payment-signature` header counts; a request carrying just the old V1 `X-PAYMENT` header is treated as unpaid.
 
 **Guard the startup window.** The payment handler is built asynchronously (it constructs a facilitator client), so there's a window where the server can accept connections before the handler exists. A delegate middleware that returns `503 service initializing` until the handler resolves is cheap insurance against serving unprotected routes during a restart.
 
@@ -269,7 +269,7 @@ Worth noting: my `/.well-known/x402` manifest was still V1-shaped (`x402Version:
 - [ ] Add explicit `resource` field per paid route (fixes `http://`)
 - [ ] Delete the now-dead `X-Forwarded-Proto` middleware
 - [ ] Verify 402 via the `payment-required` header, not the body
-- [ ] Move input validation ahead of the payment gate (400, not 402)
+- [ ] Validate input only when a payment signature is present; unpaid requests always get 402
 - [ ] Rewrite the client; keep V1 as `.bak`
 - [ ] Confirm on-chain settlement with a real (small) payment — tx hash is in the `X-PAYMENT-RESPONSE` header
 - [ ] Unify request field names across endpoints
@@ -287,6 +287,11 @@ And migrate before you need to. The V1 stack still works right up until the mome
 
 ---
 
+## Since the migration
+
+The service later added Bazaar discovery and moved from `@x402/*` 2.19.0 to 2.28.0. Those notes live in the x402ai repo so this guide stays focused on V1 → V2: [CHANGELOG](https://github.com/ukenal/x402ai/blob/main/CHANGELOG.md) · [Upgrading within V2](https://github.com/ukenal/x402ai/blob/main/docs/upgrading-within-v2.md)
+
+---
 ## Corrections and additions welcome
 
 The x402 package line moves fast, and some of this will go stale. If something here is wrong or has changed, open an issue or a PR — I'd rather this stay accurate than stay mine.
